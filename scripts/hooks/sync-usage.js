@@ -13,45 +13,66 @@ const CONFIG = {
   MACHINE_ID: process.env.CLAUDESCOPE_MACHINE_ID || "",
 };
 
-// ---- Pricing Table (USD per 1M tokens) ----
-const PRICING = {
-  "claude-opus-4.6": {
-    input: 5,
-    output: 25,
-    cache_read: 0.5,
-    cache_write: 6.25,
-  },
-  "claude-opus-4": {
-    input: 15,
-    output: 75,
-    cache_read: 1.5,
-    cache_write: 18.75,
-  },
-  "claude-sonnet-4": {
-    input: 3,
-    output: 15,
-    cache_read: 0.3,
-    cache_write: 3.75,
-  },
-  "claude-haiku-4.5": {
-    input: 0.8,
-    output: 4,
-    cache_read: 0.08,
-    cache_write: 1,
-  },
-  default: { input: 5, output: 25, cache_read: 0.5, cache_write: 6.25 },
+// ---- Pricing (fetched from Supabase) ----
+let PRICING = {};
+const DEFAULT_PRICING = {
+  input_per_m: 5,
+  output_per_m: 25,
+  cache_read_per_m: 0.5,
+  cache_write_per_m: 6.25,
 };
+
+async function fetchPricing() {
+  if (DRY_RUN && !CONFIG.SUPABASE_URL) {
+    console.log("⚠ No Supabase URL, using default pricing for dry run\n");
+    return;
+  }
+
+  try {
+    const res = await fetch(
+      `${CONFIG.SUPABASE_URL}/rest/v1/model_pricing?select=model_family,input_per_m,output_per_m,cache_read_per_m,cache_write_per_m`,
+      {
+        headers: {
+          apikey: CONFIG.SUPABASE_SERVICE_KEY,
+          Authorization: `Bearer ${CONFIG.SUPABASE_SERVICE_KEY}`,
+        },
+      },
+    );
+
+    if (!res.ok) {
+      throw new Error(`${res.status} ${res.statusText}`);
+    }
+
+    const rows = await res.json();
+    for (const row of rows) {
+      PRICING[row.model_family] = {
+        input_per_m: Number(row.input_per_m),
+        output_per_m: Number(row.output_per_m),
+        cache_read_per_m: Number(row.cache_read_per_m),
+        cache_write_per_m: Number(row.cache_write_per_m),
+      };
+    }
+
+    console.log(`Loaded pricing for ${rows.length} models\n`);
+  } catch (err) {
+    console.warn(`⚠ Failed to fetch pricing: ${err.message}`);
+    console.warn("  Using default pricing as fallback\n");
+  }
+}
 
 function getModelFamily(modelString) {
   if (modelString.includes("opus-4-6")) return "claude-opus-4.6";
+  if (modelString.includes("opus-4-5")) return "claude-opus-4.5";
+  if (modelString.includes("opus-4-1")) return "claude-opus-4.1";
   if (modelString.includes("opus")) return "claude-opus-4";
-  if (modelString.includes("haiku")) return "claude-haiku-4.5";
+  if (modelString.includes("sonnet-4-5")) return "claude-sonnet-4.5";
   if (modelString.includes("sonnet")) return "claude-sonnet-4";
-  return "default";
+  if (modelString.includes("haiku")) return "claude-haiku-4.5";
+  return "unknown";
 }
 
 function calculateCost(usage, modelFamily) {
-  const p = PRICING[modelFamily] || PRICING.default;
+  const p = PRICING[modelFamily] || DEFAULT_PRICING;
 
   const normalInput =
     (usage.input_tokens || 0) -
@@ -59,10 +80,10 @@ function calculateCost(usage, modelFamily) {
     (usage.cache_creation_input_tokens || 0);
 
   const cost =
-    (Math.max(0, normalInput) / 1e6) * p.input +
-    ((usage.cache_creation_input_tokens || 0) / 1e6) * p.cache_write +
-    ((usage.cache_read_input_tokens || 0) / 1e6) * p.cache_read +
-    ((usage.output_tokens || 0) / 1e6) * p.output;
+    (Math.max(0, normalInput) / 1e6) * p.input_per_m +
+    ((usage.cache_creation_input_tokens || 0) / 1e6) * p.cache_write_per_m +
+    ((usage.cache_read_input_tokens || 0) / 1e6) * p.cache_read_per_m +
+    ((usage.output_tokens || 0) / 1e6) * p.output_per_m;
 
   return Math.round(cost * 1e6) / 1e6;
 }
@@ -94,7 +115,7 @@ function parseSessionFile(filePath) {
         sessionEnd = entry.timestamp; // always update to latest
       }
 
-      // Path 1: opus 格式 — entry.message.usage + entry.requestId
+      // Path 1: opus format — entry.message.usage + entry.requestId
       if (entry.message?.usage && entry.requestId) {
         requestMap.set(entry.requestId, {
           usage: entry.message.usage,
@@ -102,7 +123,7 @@ function parseSessionFile(filePath) {
         });
       }
 
-      // Path 2: haiku/agent 格式 — entry.data.message.message.usage
+      // Path 2: haiku/agent format — entry.data.message.message.usage
       const nested = entry.data?.message?.message;
       const nestedReqId = entry.data?.message?.requestId;
       if (nested?.usage && nestedReqId) {
@@ -219,6 +240,9 @@ async function uploadRecord(record) {
 }
 
 async function syncAll() {
+  // Fetch pricing from Supabase
+  await fetchPricing();
+
   const projectsDir = getProjectsDir();
   if (!fs.existsSync(projectsDir)) {
     console.log("No projects directory found.");
