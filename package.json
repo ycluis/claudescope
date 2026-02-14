@@ -1,0 +1,25 @@
+{
+  "name": "claudescope",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Track Claude Code usage and costs across multiple machines",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=apps/web",
+    "build": "npm run build --workspace=apps/web",
+    "sync": "node --env-file=.env scripts/hooks/sync-usage.js",
+    "sync:dry": "node scripts/hooks/sync-usage.js --dry-run",
+    "sync:pricing": "node --env-file=.env scripts/sync-pricing.js",
+    "sync:pricing:dry": "node scripts/sync-pricing.js --dry-run"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ycluis/claudescope.git"
+  },
+  "author": "ycluis",
+  "license": "MIT"
+}
