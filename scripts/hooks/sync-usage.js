@@ -94,8 +94,16 @@ function getClaudeDir() {
   return path.join(os.homedir(), ".claude");
 }
 
-function getProjectsDir() {
-  return path.join(getClaudeDir(), "projects");
+function getConfigClaudeDir() {
+  return path.join(os.homedir(), ".config", "claude");
+}
+
+function getAllProjectsDirs() {
+  const dirs = [
+    path.join(getClaudeDir(), "projects"),
+    path.join(getConfigClaudeDir(), "projects"),
+  ];
+  return dirs.filter((d) => fs.existsSync(d));
 }
 
 function parseSessionFile(filePath) {
@@ -243,8 +251,8 @@ async function syncAll() {
   // Fetch pricing from Supabase
   await fetchPricing();
 
-  const projectsDir = getProjectsDir();
-  if (!fs.existsSync(projectsDir)) {
+  const allProjectsDirs = getAllProjectsDirs();
+  if (allProjectsDirs.length === 0) {
     console.log("No projects directory found.");
     return;
   }
@@ -254,92 +262,94 @@ async function syncAll() {
   let skipped = 0;
   let grandTotal = 0;
 
-  const projectDirs = fs.readdirSync(projectsDir);
+  for (const projectsDir of allProjectsDirs) {
+    const projectDirs = fs.readdirSync(projectsDir);
 
-  for (const projectDir of projectDirs) {
-    const fullProjectDir = path.join(projectsDir, projectDir);
-    if (!fs.statSync(fullProjectDir).isDirectory()) continue;
+    for (const projectDir of projectDirs) {
+      const fullProjectDir = path.join(projectsDir, projectDir);
+      if (!fs.statSync(fullProjectDir).isDirectory()) continue;
 
-    const files = fs
-      .readdirSync(fullProjectDir)
-      .filter((f) => f.endsWith(".jsonl"));
+      const files = fs
+        .readdirSync(fullProjectDir)
+        .filter((f) => f.endsWith(".jsonl"));
 
-    for (const file of files) {
-      const sessionId = path.basename(file, ".jsonl");
+      for (const file of files) {
+        const sessionId = path.basename(file, ".jsonl");
 
-      if (synced[sessionId]) {
-        skipped++;
-        continue;
-      }
-
-      const filePath = path.join(fullProjectDir, file);
-
-      const stat = fs.statSync(filePath);
-
-      const {
-        totalUsage,
-        totalCost,
-        primaryModel,
-        modelCount,
-        modelCost,
-        sessionStart,
-        sessionEnd,
-      } = parseSessionFile(filePath);
-
-      if (totalUsage.input_tokens === 0 && totalUsage.output_tokens === 0) {
-        if (!DRY_RUN) markSynced(sessionId);
-        skipped++;
-        continue;
-      }
-
-      const cost = totalCost;
-      const project = extractProjectName(fullProjectDir);
-      grandTotal += cost;
-
-      const record = {
-        machine_id: CONFIG.MACHINE_ID,
-        session_id: sessionId,
-        model: primaryModel || "unknown",
-        project_slug: project,
-        input_tokens: totalUsage.input_tokens,
-        output_tokens: totalUsage.output_tokens,
-        cache_write_tokens: totalUsage.cache_creation_input_tokens,
-        cache_read_tokens: totalUsage.cache_read_input_tokens,
-        cost_usd: cost,
-        session_start: sessionStart || stat.birthtime.toISOString(),
-        session_end: sessionEnd || stat.mtime.toISOString(),
-      };
-
-      if (DRY_RUN) {
-        uploaded++;
-        console.log(`── ${project} ── ${sessionId.slice(0, 8)}...`);
-        console.log(
-          `   input:  ${totalUsage.input_tokens.toLocaleString()}  output: ${totalUsage.output_tokens.toLocaleString()}`,
-        );
-        console.log(
-          `   cache_read: ${totalUsage.cache_read_input_tokens.toLocaleString()}  cache_write: ${totalUsage.cache_creation_input_tokens.toLocaleString()}`,
-        );
-
-        // Per-model breakdown
-        for (const [family, count] of Object.entries(modelCount)) {
-          const familyCost = modelCost[family] || 0;
-          console.log(
-            `   ${family}: ${count} reqs → $${familyCost.toFixed(4)}`,
-          );
+        if (synced[sessionId]) {
+          skipped++;
+          continue;
         }
 
-        console.log(`   total:  $${cost.toFixed(4)}`);
-        console.log();
-      } else {
-        try {
-          await uploadRecord(record);
-          markSynced(sessionId);
+        const filePath = path.join(fullProjectDir, file);
+
+        const stat = fs.statSync(filePath);
+
+        const {
+          totalUsage,
+          totalCost,
+          primaryModel,
+          modelCount,
+          modelCost,
+          sessionStart,
+          sessionEnd,
+        } = parseSessionFile(filePath);
+
+        if (totalUsage.input_tokens === 0 && totalUsage.output_tokens === 0) {
+          if (!DRY_RUN) markSynced(sessionId);
+          skipped++;
+          continue;
+        }
+
+        const cost = totalCost;
+        const project = extractProjectName(fullProjectDir);
+        grandTotal += cost;
+
+        const record = {
+          machine_id: CONFIG.MACHINE_ID,
+          session_id: sessionId,
+          model: primaryModel || "unknown",
+          project_slug: project,
+          input_tokens: totalUsage.input_tokens,
+          output_tokens: totalUsage.output_tokens,
+          cache_write_tokens: totalUsage.cache_creation_input_tokens,
+          cache_read_tokens: totalUsage.cache_read_input_tokens,
+          cost_usd: cost,
+          session_start: sessionStart || stat.birthtime.toISOString(),
+          session_end: sessionEnd || stat.mtime.toISOString(),
+        };
+
+        if (DRY_RUN) {
           uploaded++;
+          console.log(`── ${project} ── ${sessionId.slice(0, 8)}...`);
           console.log(
-            `✓ Synced: ${sessionId} (${project}) $${cost.toFixed(4)}`,
+            `   input:  ${totalUsage.input_tokens.toLocaleString()}  output: ${totalUsage.output_tokens.toLocaleString()}`,
           );
-        } catch (err) {
-          console.error(`✗ Failed: ${sessionId}:`, err.message);
+          console.log(
+            `   cache_read: ${totalUsage.cache_read_input_tokens.toLocaleString()}  cache_write: ${totalUsage.cache_creation_input_tokens.toLocaleString()}`,
+          );
+
+          // Per-model breakdown
+          for (const [family, count] of Object.entries(modelCount)) {
+            const familyCost = modelCost[family] || 0;
+            console.log(
+              `   ${family}: ${count} reqs → $${familyCost.toFixed(4)}`,
+            );
+          }
+
+          console.log(`   total:  $${cost.toFixed(4)}`);
+          console.log();
+        } else {
+          try {
+            await uploadRecord(record);
+            markSynced(sessionId);
+            uploaded++;
+            console.log(
+              `✓ Synced: ${sessionId} (${project}) $${cost.toFixed(4)}`,
+            );
+          } catch (err) {
+            console.error(`✗ Failed: ${sessionId}:`, err.message);
+          }
         }
       }
     }
